@@ -52,6 +52,8 @@ export type OrderIdentifier = {
   pairId: string;
 };
 
+export type OrderInvalidation = OrderPortion & Remote;
+
 export type OrderPortion = OrderIdentifier & {
   quantity: number;
   localId?: string;

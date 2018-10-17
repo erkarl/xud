@@ -12,6 +12,7 @@ type SplitOrder = {
 };
 
 type orderId = string;
+type PeerPubKey = string;
 
 type OrderList<T extends orders.StampedOrder> = Map<orderId, T>;
 
@@ -37,7 +38,7 @@ class MatchingEngine {
   /** a pair of maps between active own orders ids and orders for the buy and sell sides of this trading pair. */
   public ownOrders: OrderSidesLists<orders.StampedOwnOrder>;
   /** a pair of maps between active peer orders ids and orders for the buy and sell sides of this trading pair. */
-  public peerOrders: OrderSidesLists<orders.StampedPeerOrder>;
+  public peersOrders: Map<PeerPubKey, OrderSidesLists<orders.StampedPeerOrder>>;
 
   constructor(private logger: Logger, public pairId: string) {
     this.queues = {
@@ -50,10 +51,7 @@ class MatchingEngine {
       sell: new Map<orderId, StampedOwnOrder>(),
     };
 
-    this.peerOrders = {
-      buy: new Map<orderId, StampedPeerOrder>(),
-      sell: new Map<orderId, StampedPeerOrder>(),
-    };
+    this.peersOrders = new Map<PeerPubKey, OrderSidesLists<orders.StampedPeerOrder>>();
   }
 
   private static createPriorityQueue = (orderingDirection: OrderingDirection): FastPriorityQueue<StampedOrder> => {
@@ -105,7 +103,15 @@ class MatchingEngine {
    * @returns false if it's a duplicated order, otherwise true
    */
   public addPeerOrder = (order: StampedPeerOrder): boolean => {
-    return this.addOrder(order, this.peerOrders);
+    let peerOrdersList = this.peersOrders.get(order.peerPubKey);
+    if (!peerOrdersList) {
+      peerOrdersList = {
+        buy: new Map<orderId, StampedPeerOrder>(),
+        sell: new Map<orderId, StampedPeerOrder>(),
+      };
+      this.peersOrders.set(order.peerPubKey, peerOrdersList);
+    }
+    return this.addOrder(order, peerOrdersList);
   }
 
   // TODO: remove method
@@ -152,11 +158,14 @@ class MatchingEngine {
       ...this.queues.sell.removeMany(callback),
     ] as StampedPeerOrder[];
 
-    // remove from lists. for further optimization, we can maintain a separate list for each peer pubKey
-    removedOrders.forEach((order: StampedPeerOrder) => {
-      const list = order.isBuy ? this.peerOrders.buy : this.peerOrders.sell;
-      list.delete(order.id);
-    });
+    // remove from lists.
+    const peerOrdersList = this.peersOrders.get(peerPubKey);
+    if (peerOrdersList) {
+      removedOrders.forEach((order: StampedPeerOrder) => {
+        const list = order.isBuy ? peerOrdersList.buy : peerOrdersList.sell;
+        list.delete(order.id);
+      });
+    }
 
     return removedOrders;
   }
@@ -167,8 +176,12 @@ class MatchingEngine {
    * quantity then the entire order is removed
    * @returns the removed order or order portion, otherwise undefined if the order wasn't found
    */
-  public removePeerOrder = (orderId: string, quantityToRemove?: number): { order: StampedOwnOrder, fullyRemoved: boolean} => {
-    return this.removeOrder(orderId, this.peerOrders, quantityToRemove);
+  public removePeerOrder = (orderId: string, peerPubKey: string, quantityToRemove?: number): { order: StampedOwnOrder, fullyRemoved: boolean} => {
+    const peerOrdersList = this.peersOrders.get(peerPubKey);
+    if (!peerOrdersList) {
+      throw errors.PEER_ORDER_NOT_FOUND(orderId, peerPubKey);
+    }
+    return this.removeOrder(orderId, peerOrdersList, quantityToRemove);
   }
 
   /**
@@ -209,7 +222,15 @@ class MatchingEngine {
     if (isOwnOrder(order)) {
       return order.isBuy ? this.ownOrders.buy : this.ownOrders.sell;
     } else {
-      return order.isBuy ? this.peerOrders.buy : this.peerOrders.sell;
+      let peerOrdersList = this.peersOrders.get(order.peerPubKey);
+      if (!peerOrdersList) {
+        peerOrdersList = {
+          buy: new Map<orderId, StampedPeerOrder>(),
+          sell: new Map<orderId, StampedPeerOrder>(),
+        };
+        this.peersOrders.set(order.peerPubKey, peerOrdersList);
+      }
+      return order.isBuy ? peerOrdersList.buy : peerOrdersList.sell;
     }
   }
 
@@ -220,8 +241,30 @@ class MatchingEngine {
     };
   }
 
-  public getPeerOrders = () => {
-    return this.getOrders(this.peerOrders);
+  public getPeerOrder = (orderId: string, peerPubKey: string): StampedPeerOrder => {
+    const peerOrders = this.peersOrders.get(peerPubKey);
+    if (!peerOrders) {
+      throw errors.PEER_ORDER_NOT_FOUND(orderId, peerPubKey);
+    }
+    const order = this.getOrder(orderId, peerOrders);
+    if (!order) {
+      throw errors.PEER_ORDER_NOT_FOUND(orderId, peerPubKey);
+    }
+    return order;
+  }
+
+  private getOrder = <T extends StampedOrder>(orderId: string, maps: OrderSidesLists<T>): T | undefined => {
+    return maps.buy.get(orderId) || maps.sell.get(orderId);
+  }
+
+  public getPeerOrders = (): OrderSidesArrays<StampedPeerOrder> => {
+    const res: OrderSidesArrays<StampedPeerOrder> = { buy: [], sell: [] };
+    this.peersOrders.forEach((peerOrders) => {
+      const peerOrdersArrs = this.getOrders(peerOrders);
+      res.buy.push(...peerOrdersArrs.buy);
+      res.sell.push(...peerOrdersArrs.sell);
+    });
+    return res;
   }
 
   public getOwnOrders = () => {

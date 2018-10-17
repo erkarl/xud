@@ -10,6 +10,7 @@ const errorCodes = {
   CURRENCY_ALREADY_EXISTS: codesPrefix.concat('.6'),
   PAIR_ALREADY_EXISTS: codesPrefix.concat('.7'),
   ORDER_NOT_FOUND: codesPrefix.concat('.8'),
+  PEER_ORDER_NOT_FOUND: codesPrefix.concat('.9'),
 };
 
 const errors = {
@@ -44,6 +45,10 @@ const errors = {
   ORDER_NOT_FOUND: (orderId: string) => ({
     message: `order with id ${orderId} could not be found`,
     code: errorCodes.ORDER_NOT_FOUND,
+  }),
+  PEER_ORDER_NOT_FOUND: (orderId: string, peerPubKey: string) => ({
+    message: `peer order ${orderId} of peer ${peerPubKey} could not be found`,
+    code: errorCodes.PEER_ORDER_NOT_FOUND,
   }),
 };
 

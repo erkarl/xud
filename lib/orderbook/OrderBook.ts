@@ -3,7 +3,7 @@ import uuidv1 from 'uuid/v1';
 import { EventEmitter } from 'events';
 import OrderBookRepository from './OrderBookRepository';
 import MatchingEngine from './MatchingEngine';
-import errors from './errors';
+import errors, { errorCodes } from './errors';
 import Pool from '../p2p/Pool';
 import Peer from '../p2p/Peer';
 import { orders, db } from '../types';
@@ -13,7 +13,7 @@ import { Models } from '../db/DB';
 import Swaps from '../swaps/Swaps';
 import { SwapDealRole, SwapFailureReason } from '../types/enums';
 import { CurrencyInstance, PairInstance, CurrencyFactory } from '../types/db';
-import { Pair, OrderIdentifier, StampedOwnOrder, OrderPortion, StampedPeerOrder, OwnOrder } from '../types/orders';
+import { Pair, OrderIdentifier, StampedOwnOrder, OrderPortion, StampedPeerOrder, OwnOrder, OrderInvalidation } from '../types/orders';
 import { PlaceOrderEvent, PlaceOrderEventCase, PlaceOrderResult } from '../types/orderBook';
 import { SwapRequestPacket, SwapErrorPacket } from '../p2p/packets';
 
@@ -79,7 +79,8 @@ class OrderBook extends EventEmitter {
   private bindPool = () => {
     if (this.pool) {
       this.pool.on('packet.order', this.addPeerOrder);
-      this.pool.on('packet.orderInvalidation', order => this.removePeerOrder(order.orderId, order.pairId, order.quantity));
+      this.pool.on('packet.orderInvalidation', (oi: OrderInvalidation) =>
+        this.removePeerOrder(oi.orderId, oi.pairId, oi.peerPubKey, oi.quantity));
       this.pool.on('packet.getOrders', this.sendOrders);
       this.pool.on('packet.swapRequest', this.handleSwapRequest);
       this.pool.on('peer.close', this.removePeerOrders);
@@ -391,14 +392,19 @@ class OrderBook extends EventEmitter {
    * @param quantityToRemove the quantity to remove from the order, if undefined then the full order is removed
    * @returns `true` if the order or portion thereof was removed, otherwise `false`
    */
-  private removePeerOrder = (orderId: string, pairId: string, quantityToRemove?: number) => {
+  private removePeerOrder = (orderId: string, pairId: string, peerPubKey: string, quantityToRemove?: number) => {
     const matchingEngine = this.getMatchingEngine(pairId);
     try {
-      const removeResult = matchingEngine.removePeerOrder(orderId, quantityToRemove);
+      const removeResult = matchingEngine.removePeerOrder(orderId, peerPubKey, quantityToRemove);
       this.emit('peerOrder.invalidation', { orderId, pairId, quantity: removeResult.order.quantity });
       return true;
     } catch (err) {
-      this.logger.error(`attempted to remove non-existing orderId (${orderId})`);
+      let errMsg = `attempted to remove non-existing orderId (${orderId})`;
+      if (err && err.code === errorCodes.PEER_ORDER_NOT_FOUND) {
+        errMsg = err.message;
+        // TODO: penalize peer with negative reputation event
+      }
+      this.logger.error(errMsg);
       return false;
     }
   }
